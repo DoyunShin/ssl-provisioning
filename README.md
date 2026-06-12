@@ -9,22 +9,21 @@ authenticated, end-to-end encrypted channel, writing them atomically to local pa
 
 ## Installation
 
-**With uv (recommended):**
+The distribution is published on PyPI as `ssl-provisioning`; the installed command
+and import package are both named `sslpv`.
+
+**From PyPI:**
 
 ```sh
-uv pip install .
+pip install ssl-provisioning
+# or, one-shot without a permanent install:
+uvx --from ssl-provisioning sslpv --help
 ```
 
-**With pip:**
+**From a local checkout:**
 
 ```sh
-pip install .
-```
-
-**One-shot execution with uvx (no permanent install):**
-
-```sh
-uvx sslpv --help
+uv pip install .   # or: pip install .
 ```
 
 ---

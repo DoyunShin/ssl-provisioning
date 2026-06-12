@@ -1,5 +1,5 @@
 [project]
-name = "sslpv"
+name = "ssl-provisioning"
 version = "1.0.0"
 description = "SSL certificate provisioning tool: a FastAPI server distributes fullchain/privkey to one-shot CLI clients over an authenticated, end-to-end encrypted channel."
 readme = "README.md"
