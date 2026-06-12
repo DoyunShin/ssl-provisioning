@@ -98,6 +98,45 @@ sslpv client \
 | `--ca-cert PATH` | no | Path to a custom PEM CA bundle for TLS verification. |
 | `--pin-sha256 HEX` | no | Expected SHA-256 hex fingerprint of the server leaf certificate. |
 | `--timeout SECONDS` | no | Per-request timeout in seconds. Default: `30.0`. |
+| `--post-hook COMMAND` | no | Shell command to run after a successful update. See "Post-update hook" below. |
+| `--hook-on-change` | no | Only run `--post-hook` when the certificate or key content actually changed. |
+
+### Post-update hook
+
+`--post-hook COMMAND` runs the given shell command after the certificate and private key
+have been written successfully.  This is intended for actions such as reloading a web
+server that holds the certificate in memory.
+
+The hook process receives the following environment variables:
+
+| Variable | Value |
+|---|---|
+| `SSLPV_CERT_PATH` | Absolute path to the written certificate file. |
+| `SSLPV_PRIVKEY_PATH` | Absolute path to the written private key file. |
+| `SSLPV_SERVER` | Server base URL passed to the client. |
+| `SSLPV_CHANGED` | `"1"` if the certificate or key content changed; `"0"` otherwise. |
+
+Use `--hook-on-change` to skip the hook when the fetched certificate and key are
+byte-for-byte identical to what is already on disk.  This avoids unnecessary service
+reloads in scheduled runs where the certificate has not yet been renewed.
+
+```sh
+sslpv client \
+  --server https://example.com:1243 \
+  --key /path/to/apikey.txt \
+  --cert /etc/ssl/fullchain.pem \
+  --privkey /etc/ssl/privkey.pem \
+  --post-hook 'systemctl reload nginx' \
+  --hook-on-change
+```
+
+If the hook exits with a non-zero code, `sslpv client` exits with that same code so
+that cron or monitoring systems can detect the failure.  The certificate files are
+always written before the hook runs; a hook failure does not roll back the write.
+
+**Security note:** The command is executed via the shell (`sh -c`), following the same
+trust model as certbot's `--deploy-hook`.  Do not pass untrusted input as the command
+value.  The operator is responsible for ensuring the command string is safe.
 
 ### TLS for self-signed or IP-addressed servers
 
@@ -143,6 +182,28 @@ API key.
 The server uses uvicorn with `ssl.PROTOCOL_TLS_SERVER` (TLS 1.2 or higher) and a
 modern cipher suite (`ECDHE+AESGCM:ECDHE+CHACHA20`). Use `--ca-cert` or `--pin-sha256`
 on the client when the server certificate is not trusted by the system CA store.
+
+---
+
+## Scheduled renewal (cron)
+
+A typical cron entry that fetches the certificate nightly and reloads nginx only when
+the content actually changes:
+
+```cron
+0 3 * * * sslpv client \
+  --server https://example.com:1243 \
+  --key /run/secrets/sslpv-apikey \
+  --cert /etc/ssl/fullchain.pem \
+  --privkey /etc/ssl/privkey.pem \
+  --post-hook 'systemctl reload nginx' \
+  --hook-on-change
+```
+
+Without `--hook-on-change`, the hook runs on every cron invocation regardless of
+whether the certificate changed.  Using `--hook-on-change` avoids unnecessary nginx
+reloads while still ensuring the service is reloaded whenever a new certificate is
+written.
 
 ---
 

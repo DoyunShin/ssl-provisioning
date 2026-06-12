@@ -36,6 +36,8 @@ def test_build_parser_client_subcommand_required_args():
     assert args.ca_cert is None
     assert args.pin_sha256 is None
     assert args.timeout == 30.0
+    assert args.post_hook is None
+    assert args.hook_on_change is False
 
 
 def test_build_parser_client_subcommand_optional_args():
@@ -55,6 +57,34 @@ def test_build_parser_client_subcommand_optional_args():
     assert args.ca_cert == "/etc/ssl/ca.pem"
     assert args.pin_sha256 == "ab:cd:ef:00"
     assert args.timeout == 60.0
+
+
+def test_build_parser_client_post_hook_flags():
+    parser = build_parser()
+    args = parser.parse_args([
+        "client",
+        "--server", "https://example.com:1243",
+        "--key", "/run/secrets/apikey",
+        "--cert", "/tmp/fullchain.pem",
+        "--privkey", "/tmp/privkey.pem",
+        "--post-hook", "echo hi",
+        "--hook-on-change",
+    ])
+    assert args.post_hook == "echo hi"
+    assert args.hook_on_change is True
+
+
+def test_build_parser_client_post_hook_defaults():
+    parser = build_parser()
+    args = parser.parse_args([
+        "client",
+        "--server", "https://example.com:1243",
+        "--key", "/run/secrets/apikey",
+        "--cert", "/tmp/fullchain.pem",
+        "--privkey", "/tmp/privkey.pem",
+    ])
+    assert args.post_hook is None
+    assert args.hook_on_change is False
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +124,8 @@ def test_main_client_dispatches_to_run_client(monkeypatch):
         ca_cert=None,
         pin_sha256=None,
         timeout=30.0,
+        post_hook=None,
+        hook_on_change=False,
     ):
         assert server == "https://example.com:1243"
         assert key_path == "/run/secrets/apikey"
@@ -103,6 +135,8 @@ def test_main_client_dispatches_to_run_client(monkeypatch):
         assert ca_cert is None
         assert pin_sha256 is None
         assert timeout == 30.0
+        assert post_hook is None
+        assert hook_on_change is False
         return sentinel
 
     monkeypatch.setattr(cli_module, "run_client", fake_run_client)
@@ -129,6 +163,8 @@ def test_main_client_optional_flags_passed_through(monkeypatch):
         ca_cert=None,
         pin_sha256=None,
         timeout=30.0,
+        post_hook=None,
+        hook_on_change=False,
     ):
         captured["insecure"] = insecure
         captured["ca_cert"] = ca_cert
@@ -154,6 +190,74 @@ def test_main_client_optional_flags_passed_through(monkeypatch):
     assert captured["ca_cert"] == "/etc/ssl/ca.pem"
     assert captured["pin_sha256"] == "deadbeef"
     assert captured["timeout"] == 15.5
+
+
+def test_main_client_post_hook_flags_forwarded(monkeypatch):
+    captured = {}
+
+    def fake_run_client(
+        server,
+        key_path,
+        cert_path,
+        privkey_path,
+        insecure=False,
+        ca_cert=None,
+        pin_sha256=None,
+        timeout=30.0,
+        post_hook=None,
+        hook_on_change=False,
+    ):
+        captured["post_hook"] = post_hook
+        captured["hook_on_change"] = hook_on_change
+        return 0
+
+    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+
+    main([
+        "client",
+        "--server", "https://example.com:1243",
+        "--key", "/tmp/key",
+        "--cert", "/tmp/cert.pem",
+        "--privkey", "/tmp/privkey.pem",
+        "--post-hook", "systemctl reload nginx",
+        "--hook-on-change",
+    ])
+
+    assert captured["post_hook"] == "systemctl reload nginx"
+    assert captured["hook_on_change"] is True
+
+
+def test_main_client_post_hook_defaults_forwarded(monkeypatch):
+    captured = {}
+
+    def fake_run_client(
+        server,
+        key_path,
+        cert_path,
+        privkey_path,
+        insecure=False,
+        ca_cert=None,
+        pin_sha256=None,
+        timeout=30.0,
+        post_hook=None,
+        hook_on_change=False,
+    ):
+        captured["post_hook"] = post_hook
+        captured["hook_on_change"] = hook_on_change
+        return 0
+
+    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+
+    main([
+        "client",
+        "--server", "https://example.com:1243",
+        "--key", "/tmp/key",
+        "--cert", "/tmp/cert.pem",
+        "--privkey", "/tmp/privkey.pem",
+    ])
+
+    assert captured["post_hook"] is None
+    assert captured["hook_on_change"] is False
 
 
 # ---------------------------------------------------------------------------

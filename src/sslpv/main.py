@@ -101,6 +101,25 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Per-request timeout in seconds (default: 30.0).",
     )
+    client_parser.add_argument(
+        "--post-hook",
+        metavar="COMMAND",
+        dest="post_hook",
+        default=None,
+        help=(
+            "Shell command to run after a successful update "
+            "(e.g. 'systemctl reload nginx'). "
+            "Receives SSLPV_CERT_PATH, SSLPV_PRIVKEY_PATH, "
+            "SSLPV_SERVER, SSLPV_CHANGED env vars."
+        ),
+    )
+    client_parser.add_argument(
+        "--hook-on-change",
+        action="store_true",
+        dest="hook_on_change",
+        default=False,
+        help="Only run --post-hook when the certificate or key content actually changed.",
+    )
 
     return parser
 
@@ -143,6 +162,8 @@ def _run_client_subcommand(args: argparse.Namespace) -> int:
         ca_cert=args.ca_cert,
         pin_sha256=args.pin_sha256,
         timeout=args.timeout,
+        post_hook=args.post_hook,
+        hook_on_change=args.hook_on_change,
     )
 
 

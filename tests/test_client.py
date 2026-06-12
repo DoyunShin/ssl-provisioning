@@ -21,9 +21,11 @@ from cryptography.x509.oid import NameOID
 from sslpv.services.client import (
     _SafeRedirectHandler,
     build_opener,
+    detect_pair_change,
     fetch_encrypted_pem,
     read_api_key,
     run_client,
+    run_post_hook,
     validate_server_url,
     write_pair_atomically,
 )
@@ -492,3 +494,235 @@ class TestFetchEncryptedPemRealCrypto:
                 apikey=_TEST_APIKEY,
                 timeout=5.0,
             )
+
+
+# ---------------------------------------------------------------------------
+# detect_pair_change
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPairChange:
+    def test_missing_both_files_returns_true(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        assert detect_pair_change(cert_path, b"CERT", privkey_path, b"KEY") is True
+
+    def test_missing_cert_only_returns_true(self, tmp_path):
+        privkey_path = str(tmp_path / "key.pem")
+        (tmp_path / "key.pem").write_bytes(b"KEY")
+        cert_path = str(tmp_path / "cert.pem")
+        assert detect_pair_change(cert_path, b"CERT", privkey_path, b"KEY") is True
+
+    def test_missing_privkey_only_returns_true(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        (tmp_path / "cert.pem").write_bytes(b"CERT")
+        privkey_path = str(tmp_path / "key.pem")
+        assert detect_pair_change(cert_path, b"CERT", privkey_path, b"KEY") is True
+
+    def test_identical_bytes_returns_false(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        (tmp_path / "cert.pem").write_bytes(b"CERT")
+        (tmp_path / "key.pem").write_bytes(b"KEY")
+        assert detect_pair_change(cert_path, b"CERT", privkey_path, b"KEY") is False
+
+    def test_differing_cert_returns_true(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        (tmp_path / "cert.pem").write_bytes(b"OLD_CERT")
+        (tmp_path / "key.pem").write_bytes(b"KEY")
+        assert detect_pair_change(cert_path, b"NEW_CERT", privkey_path, b"KEY") is True
+
+    def test_differing_privkey_returns_true(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        (tmp_path / "cert.pem").write_bytes(b"CERT")
+        (tmp_path / "key.pem").write_bytes(b"OLD_KEY")
+        assert detect_pair_change(cert_path, b"CERT", privkey_path, b"NEW_KEY") is True
+
+
+# ---------------------------------------------------------------------------
+# run_post_hook
+# ---------------------------------------------------------------------------
+
+
+class TestRunPostHook:
+    def test_succeeding_command_returns_zero(self, tmp_path):
+        rc = run_post_hook(
+            "exit 0",
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            "https://example.com",
+            changed=True,
+        )
+        assert rc == 0
+
+    def test_failing_command_returns_nonzero(self, tmp_path):
+        rc = run_post_hook(
+            "exit 3",
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            "https://example.com",
+            changed=True,
+        )
+        assert rc == 3
+
+    def test_sslpv_changed_env_var_is_one_when_changed(self, tmp_path):
+        marker = str(tmp_path / "changed_val.txt")
+        rc = run_post_hook(
+            f'printf "%s" "$SSLPV_CHANGED" > {marker}',
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            "https://example.com",
+            changed=True,
+        )
+        assert rc == 0
+        assert open(marker).read() == "1"
+
+    def test_sslpv_changed_env_var_is_zero_when_not_changed(self, tmp_path):
+        marker = str(tmp_path / "changed_val.txt")
+        rc = run_post_hook(
+            f'printf "%s" "$SSLPV_CHANGED" > {marker}',
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            "https://example.com",
+            changed=False,
+        )
+        assert rc == 0
+        assert open(marker).read() == "0"
+
+    def test_sslpv_cert_path_env_var_is_exported(self, tmp_path):
+        cert_path = str(tmp_path / "cert.pem")
+        marker = str(tmp_path / "cert_path_val.txt")
+        rc = run_post_hook(
+            f'printf "%s" "$SSLPV_CERT_PATH" > {marker}',
+            cert_path,
+            str(tmp_path / "key.pem"),
+            "https://example.com",
+            changed=True,
+        )
+        assert rc == 0
+        assert open(marker).read() == os.path.abspath(cert_path)
+
+
+# ---------------------------------------------------------------------------
+# run_client post-hook integration
+# ---------------------------------------------------------------------------
+
+
+class TestRunClientPostHook:
+    """Integration tests for run_client with post_hook and hook_on_change."""
+
+    def _write_key_file(self, tmp_path, content: str = "test-api-key") -> str:
+        key_file = tmp_path / "api.key"
+        key_file.write_text(content)
+        key_file.chmod(0o600)
+        return str(key_file)
+
+    def _make_fake_fetch(self, cert_pem: bytes, key_pem: bytes):
+        def fake_fetch(opener, base, path, apikey, timeout):
+            if path == "/cert":
+                return cert_pem
+            return key_pem
+
+        return fake_fetch
+
+    def test_post_hook_runs_on_success(self, tmp_path, monkeypatch):
+        cert_pem, key_pem = make_cert_key()
+        key_file = self._write_key_file(tmp_path)
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        sentinel = str(tmp_path / "hook_ran")
+
+        monkeypatch.setattr(
+            "sslpv.services.client.fetch_encrypted_pem",
+            self._make_fake_fetch(cert_pem, key_pem),
+        )
+
+        result = run_client(
+            server="https://example.com",
+            key_path=key_file,
+            cert_path=cert_path,
+            privkey_path=privkey_path,
+            post_hook=f"touch {sentinel}",
+        )
+
+        assert result == 0
+        assert os.path.exists(sentinel), "Sentinel file must be created by the hook"
+
+    def test_hook_on_change_skips_when_unchanged(self, tmp_path, monkeypatch):
+        cert_pem, key_pem = make_cert_key()
+        key_file = self._write_key_file(tmp_path)
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        sentinel = str(tmp_path / "hook_ran")
+
+        # Pre-write identical bytes so detect_pair_change returns False.
+        (tmp_path / "cert.pem").write_bytes(cert_pem)
+        (tmp_path / "key.pem").write_bytes(key_pem)
+
+        monkeypatch.setattr(
+            "sslpv.services.client.fetch_encrypted_pem",
+            self._make_fake_fetch(cert_pem, key_pem),
+        )
+
+        result = run_client(
+            server="https://example.com",
+            key_path=key_file,
+            cert_path=cert_path,
+            privkey_path=privkey_path,
+            post_hook=f"touch {sentinel}",
+            hook_on_change=True,
+        )
+
+        assert result == 0
+        assert not os.path.exists(sentinel), "Hook must be skipped when cert is unchanged"
+
+    def test_hook_on_change_runs_when_changed(self, tmp_path, monkeypatch):
+        cert_pem, key_pem = make_cert_key()
+        key_file = self._write_key_file(tmp_path)
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+        sentinel = str(tmp_path / "hook_ran")
+
+        # Targets do not exist -> change detected.
+        monkeypatch.setattr(
+            "sslpv.services.client.fetch_encrypted_pem",
+            self._make_fake_fetch(cert_pem, key_pem),
+        )
+
+        result = run_client(
+            server="https://example.com",
+            key_path=key_file,
+            cert_path=cert_path,
+            privkey_path=privkey_path,
+            post_hook=f"touch {sentinel}",
+            hook_on_change=True,
+        )
+
+        assert result == 0
+        assert os.path.exists(sentinel), "Hook must run when cert is new/changed"
+
+    def test_hook_failure_returns_nonzero_but_cert_written(self, tmp_path, monkeypatch):
+        cert_pem, key_pem = make_cert_key()
+        key_file = self._write_key_file(tmp_path)
+        cert_path = str(tmp_path / "cert.pem")
+        privkey_path = str(tmp_path / "key.pem")
+
+        monkeypatch.setattr(
+            "sslpv.services.client.fetch_encrypted_pem",
+            self._make_fake_fetch(cert_pem, key_pem),
+        )
+
+        result = run_client(
+            server="https://example.com",
+            key_path=key_file,
+            cert_path=cert_path,
+            privkey_path=privkey_path,
+            post_hook="exit 7",
+        )
+
+        assert result == 7
+        # Cert and key must still be on disk despite hook failure.
+        assert os.path.exists(cert_path), "Certificate must be written even if hook fails"
+        assert os.path.exists(privkey_path), "Private key must be written even if hook fails"

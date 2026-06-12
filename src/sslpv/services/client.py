@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import ssl
+import subprocess
 import tempfile
 import urllib.error
 import urllib.parse
@@ -453,6 +454,97 @@ def write_pair_atomically(
 
 
 # ---------------------------------------------------------------------------
+# Post-hook helpers
+# ---------------------------------------------------------------------------
+
+
+def detect_pair_change(
+    cert_path: str,
+    cert_bytes: bytes,
+    privkey_path: str,
+    privkey_bytes: bytes,
+) -> bool:
+    """Determine whether the incoming cert/privkey differs from what is on disk.
+
+    Returns True if either file is absent, unreadable, or has content that
+    differs from the supplied bytes.  Returns False only when both files exist
+    and their on-disk contents match the supplied bytes exactly.
+
+    Args:
+        cert_path(str): Path to the existing certificate file on disk.
+        cert_bytes(bytes): Incoming certificate PEM bytes to compare against.
+        privkey_path(str): Path to the existing private key file on disk.
+        privkey_bytes(bytes): Incoming private key PEM bytes to compare against.
+
+    Return:
+        changed(bool): True if either file is missing, unreadable, or differs.
+    """
+    for path, expected in ((cert_path, cert_bytes), (privkey_path, privkey_bytes)):
+        try:
+            with open(path, "rb") as fh:
+                on_disk = fh.read()
+        except OSError:
+            return True
+        if on_disk != expected:
+            return True
+    return False
+
+
+def run_post_hook(
+    command: str,
+    cert_path: str,
+    privkey_path: str,
+    server: str,
+    changed: bool,
+) -> int:
+    """Run an operator-supplied shell command after a successful certificate update.
+
+    The command is executed via the shell (shell=True), which is intentional:
+    this follows the same trust model as certbot's --deploy-hook, where the
+    command is fully operator-controlled and must not accept untrusted input.
+
+    The hook inherits the parent process's stdio so its output is visible to
+    the operator.  Stdout/stderr are not captured to avoid accidentally logging
+    secrets that a hook might print.
+
+    The following environment variables are set for the hook process:
+    - SSLPV_CERT_PATH: absolute path to the written certificate.
+    - SSLPV_PRIVKEY_PATH: absolute path to the written private key.
+    - SSLPV_SERVER: server base URL.
+    - SSLPV_CHANGED: "1" if the cert/key content changed, "0" otherwise.
+
+    Args:
+        command(str): Shell command to execute.
+        cert_path(str): Path to the certificate that was written.
+        privkey_path(str): Path to the private key that was written.
+        server(str): Server base URL passed to the hook via SSLPV_SERVER.
+        changed(bool): Whether the certificate/key content actually changed.
+
+    Return:
+        returncode(int): Exit code of the hook process.
+    """
+    env = {
+        **os.environ,
+        "SSLPV_CERT_PATH": os.path.abspath(cert_path),
+        "SSLPV_PRIVKEY_PATH": os.path.abspath(privkey_path),
+        "SSLPV_SERVER": server,
+        "SSLPV_CHANGED": "1" if changed else "0",
+    }
+
+    logger.info("Running post-hook command")
+    print_message("[INFO] Running post-hook...")
+
+    proc = subprocess.run(command, shell=True, env=env)
+
+    if proc.returncode == 0:
+        logger.info("Post-hook completed successfully (exit code 0)")
+    else:
+        logger.info("Post-hook exited with code %d", proc.returncode)
+
+    return proc.returncode
+
+
+# ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
 
@@ -466,12 +558,14 @@ def run_client(
     ca_cert: Optional[str] = None,
     pin_sha256: Optional[str] = None,
     timeout: float = 30.0,
+    post_hook: Optional[str] = None,
+    hook_on_change: bool = False,
 ) -> int:
     """Provision a certificate and private key from the sslpv server.
 
     Validates the server URL, reads the API key, fetches and decrypts both
     the certificate and the private key, verifies they form a coherent pair,
-    and writes them atomically to disk.
+    and writes them atomically to disk.  Optionally runs a post-update hook.
 
     Args:
         server(str): Server base URL (must be https).
@@ -482,9 +576,11 @@ def run_client(
         ca_cert(str, optional): Path to a custom CA bundle for verification.
         pin_sha256(str, optional): Expected SHA-256 fingerprint of the server cert.
         timeout(float): Per-request timeout in seconds.
+        post_hook(str, optional): Shell command to run after a successful write.
+        hook_on_change(bool): When True, skip the hook if the cert/key did not change.
 
     Return:
-        exit_code(int): 0 on success, 1 on any failure.
+        exit_code(int): 0 on success, non-zero on failure.
     """
     try:
         # Stage 1: Validate inputs.
@@ -515,7 +611,10 @@ def run_client(
             )
             return 1
 
-        # Stage 5: Write atomically.
+        # Stage 5: Detect change BEFORE overwriting (read old files now).
+        changed = detect_pair_change(cert_path, cert_pem, privkey_path, privkey_pem)
+
+        # Stage 6: Write atomically.
         write_pair_atomically(cert_path, cert_pem, privkey_path, privkey_pem)
 
         print_message(
@@ -523,6 +622,25 @@ def run_client(
             f"private key written to {privkey_path!r}.",
             "fg:ansigreen",
         )
+
+        # Stage 7: Post-hook (cert is already on disk even if hook fails).
+        if post_hook is None:
+            return 0
+
+        if hook_on_change and not changed:
+            logger.info("Certificate unchanged; skipping post-hook")
+            print_message("[INFO] Certificate unchanged; skipping post-hook.")
+            return 0
+
+        rc = run_post_hook(post_hook, cert_path, privkey_path, server, changed)
+        if rc != 0:
+            print_message(
+                f"Error: Post-hook failed with exit code {rc}.",
+                "fg:ansired",
+            )
+            return rc
+
+        print_message("[OK] Post-hook completed successfully.", "fg:ansigreen")
         return 0
 
     except Exception as exc:
