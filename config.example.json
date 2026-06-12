@@ -1,0 +1,10 @@
+{
+  "fullchain": "/etc/letsencrypt/live/example.com/fullchain.pem",
+  "privkey": "/etc/letsencrypt/live/example.com/privkey.pem",
+  "apikeys": ["replace-with-a-long-random-secret", "another-client-key"],
+  "host": "0.0.0.0",
+  "port": 1243,
+  "server_certfile": null,
+  "server_keyfile": null,
+  "trusted_proxies": []
+}

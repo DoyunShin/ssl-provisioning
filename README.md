@@ -1,0 +1,161 @@
+# sslpv
+
+`sslpv` is an SSL certificate provisioning tool. A long-running FastAPI server holds
+the paths to a `fullchain`/`privkey` pair and a set of API keys. A one-shot CLI client
+authenticates with an API key and pulls the current certificate and private key over an
+authenticated, end-to-end encrypted channel, writing them atomically to local paths.
+
+---
+
+## Installation
+
+**With uv (recommended):**
+
+```sh
+uv pip install .
+```
+
+**With pip:**
+
+```sh
+pip install .
+```
+
+**One-shot execution with uvx (no permanent install):**
+
+```sh
+uvx sslpv --help
+```
+
+---
+
+## Server
+
+### Starting the server
+
+```sh
+sslpv server --config /path/to/config.json
+```
+
+The server blocks until interrupted (Ctrl-C).
+
+### config.json reference
+
+```json
+{
+  "fullchain": "/etc/letsencrypt/live/example.com/fullchain.pem",
+  "privkey": "/etc/letsencrypt/live/example.com/privkey.pem",
+  "apikeys": ["replace-with-a-long-random-secret", "another-client-key"],
+  "host": "0.0.0.0",
+  "port": 1243,
+  "server_certfile": null,
+  "server_keyfile": null,
+  "trusted_proxies": []
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `fullchain` | string | yes | Path to the PEM fullchain certificate to distribute to clients. |
+| `privkey` | string | yes | Path to the PEM private key to distribute to clients. |
+| `apikeys` | list of strings | yes | One or more API keys that clients may authenticate with. |
+| `host` | string | no | Bind address. Defaults to `"0.0.0.0"`. |
+| `port` | int | no | TCP port to listen on. Defaults to `1243`. |
+| `server_certfile` | string or null | no | TLS certificate for the server itself. Falls back to `fullchain` when null. |
+| `server_keyfile` | string or null | no | TLS private key for the server itself. Falls back to `privkey` when null. |
+| `trusted_proxies` | list of strings | no | IP addresses of trusted reverse proxies whose `X-Forwarded-For` header is used to determine the real client IP for rate limiting. |
+
+### File permissions
+
+The server hard-errors on startup if the config file is readable by group or other.
+Restrict permissions before starting:
+
+```sh
+chmod 600 /path/to/config.json
+chmod 600 /path/to/privkey.pem
+```
+
+---
+
+## Client
+
+```sh
+sslpv client \
+  --server https://example.com:1243 \
+  --key /path/to/apikey.txt \
+  --cert /path/to/fullchain.pem \
+  --privkey /path/to/privkey.pem
+```
+
+### Client flags
+
+| Flag | Required | Description |
+|---|---|---|
+| `--server URL` | yes | Server base URL. Must use `https`. |
+| `--key PATH` | yes | File containing the API key. |
+| `--cert PATH` | yes | Destination path for the retrieved PEM certificate. |
+| `--privkey PATH` | yes | Destination path for the retrieved PEM private key. |
+| `--insecure` | no | Disable TLS certificate verification. Dangerous; see note below. |
+| `--ca-cert PATH` | no | Path to a custom PEM CA bundle for TLS verification. |
+| `--pin-sha256 HEX` | no | Expected SHA-256 hex fingerprint of the server leaf certificate. |
+| `--timeout SECONDS` | no | Per-request timeout in seconds. Default: `30.0`. |
+
+### TLS for self-signed or IP-addressed servers
+
+For servers with self-signed certificates or no matching DNS name, use `--ca-cert` or
+`--pin-sha256` instead of `--insecure`:
+
+```sh
+# Trust a custom CA bundle
+sslpv client --server https://192.0.2.1:1243 --ca-cert /path/to/ca.pem ...
+
+# Pin by SHA-256 fingerprint (colons optional, case-insensitive)
+sslpv client --server https://192.0.2.1:1243 --pin-sha256 ab:cd:ef:... ...
+```
+
+`--insecure` disables all chain and hostname verification and leaves the connection
+vulnerable to MITM attacks. The end-to-end encryption described below still protects
+the payload content, but the identity of the server is not verified.
+
+---
+
+## How it works
+
+### Stateless signed challenge-response authentication
+
+1. The client fetches a signed one-time nonce from `/challenge`.
+2. The client computes an HMAC proof that binds the API key, HTTP method, endpoint path,
+   nonce, issue timestamp, and an ephemeral X25519 public key. The raw API key is never
+   sent over the wire.
+3. The server verifies the proof, checks the nonce has not been spent, and marks the
+   nonce as spent immediately (one-time use).
+
+### End-to-end AES-256-GCM payload encryption
+
+Each response payload (certificate or private key) is encrypted with AES-256-GCM. The
+symmetric key is derived from an X25519 ECDH exchange between a server-side ephemeral
+key and the client's ephemeral key, with the API key mixed in as additional key
+material. Even if the TLS layer is broken or bypassed (e.g. by an on-path attacker
+under `--insecure`), the payload cannot be decrypted or forged without knowledge of the
+API key.
+
+### TLS transport
+
+The server uses uvicorn with `ssl.PROTOCOL_TLS_SERVER` (TLS 1.2 or higher) and a
+modern cipher suite (`ECDHE+AESGCM:ECDHE+CHACHA20`). Use `--ca-cert` or `--pin-sha256`
+on the client when the server certificate is not trusted by the system CA store.
+
+---
+
+## Security model and limitations
+
+- **Availability / DoS**: Protection against on-path denial-of-service is out of scope.
+  Rate limiting is implemented per-IP but an on-path attacker can still disrupt
+  availability.
+- **Single-process requirement**: The server must run with `workers=1` (the default).
+  Nonce deduplication and the rate limiter use in-memory state; multiple workers would
+  allow nonce replay across process boundaries.
+- **API key confidentiality**: Keep API key files restricted to `0600`. A key with group
+  or other read permission will trigger a warning from the client.
+- **Config file confidentiality**: The server rejects a config file with group or other
+  read bits set. Always `chmod 600` the config.
