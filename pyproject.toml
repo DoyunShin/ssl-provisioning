@@ -1,6 +1,6 @@
 [project]
 name = "sslpv"
-version = "0.1.0"
+version = "1.0.0"
 description = "SSL certificate provisioning tool: a FastAPI server distributes fullchain/privkey to one-shot CLI clients over an authenticated, end-to-end encrypted channel."
 readme = "README.md"
 requires-python = ">=3.10"
