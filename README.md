@@ -12,18 +12,36 @@ authenticated, end-to-end encrypted channel, writing them atomically to local pa
 The distribution is published on PyPI as `ssl-provisioning`; the installed command
 and import package are both named `sslpv`.
 
+The package splits its dependencies into extras so a host can install only what it
+needs. The base install pulls just the shared dependencies (`cryptography`,
+`prompt_toolkit`); the web framework (`fastapi`, `uvicorn`) is only required to run the
+server.
+
+| Install | Pulls | Use on |
+|---|---|---|
+| `pip install ssl-provisioning[server]` | base + `fastapi` + `uvicorn` | the host that runs `sslpv server` |
+| `pip install ssl-provisioning[client]` | base only | hosts that only run `sslpv client` |
+| `pip install ssl-provisioning` | base only (same as `[client]`) | client-only |
+| `pip install ssl-provisioning[all]` | everything | when one host does both |
+
+The `client` command needs no third-party web dependencies (it uses only the standard
+library plus the base deps). Running `sslpv server` without the server extra prints a
+clear hint to install `ssl-provisioning[server]`.
+
 **From PyPI:**
 
 ```sh
-pip install ssl-provisioning
+pip install 'ssl-provisioning[server]'   # server host
+pip install ssl-provisioning             # client host
 # or, one-shot without a permanent install:
-uvx --from ssl-provisioning sslpv --help
+uvx --from 'ssl-provisioning[server]' sslpv server --config config.json
+uvx --from ssl-provisioning sslpv client --help
 ```
 
 **From a local checkout:**
 
 ```sh
-uv pip install .   # or: pip install .
+uv pip install '.[server]'   # or: pip install '.[server]'
 ```
 
 ---

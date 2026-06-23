@@ -10,8 +10,6 @@ import sys
 from typing import Optional
 
 from sslpv import __version__
-from sslpv.services.client import run_client
-from sslpv.services.server import run_server
 from sslpv.utils.logging import print_message, setup_logging
 
 
@@ -134,6 +132,16 @@ def _run_server_subcommand(args: argparse.Namespace) -> int:
         exit_code(int): 0 on clean exit, 1 on error.
     """
     try:
+        from sslpv.services.server import run_server
+    except ImportError:
+        print_message(
+            "Server components are not installed. "
+            "Install them with: pip install 'ssl-provisioning[server]'",
+            "fg:ansired",
+        )
+        return 1
+
+    try:
         run_server(args.config)
         return 0
     except KeyboardInterrupt:
@@ -153,6 +161,8 @@ def _run_client_subcommand(args: argparse.Namespace) -> int:
     Return:
         exit_code(int): Exit code returned by run_client (0 = success).
     """
+    from sslpv.services.client import run_client
+
     return run_client(
         server=args.server,
         key_path=args.key,

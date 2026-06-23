@@ -1,8 +1,9 @@
 """Tests for sslpv.main CLI entry point."""
 
+import sys
+
 import pytest
 
-import sslpv.main as cli_module
 from sslpv.main import build_parser, main
 
 
@@ -139,7 +140,7 @@ def test_main_client_dispatches_to_run_client(monkeypatch):
         assert hook_on_change is False
         return sentinel
 
-    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+    monkeypatch.setattr("sslpv.services.client.run_client", fake_run_client)
 
     result = main([
         "client",
@@ -172,7 +173,7 @@ def test_main_client_optional_flags_passed_through(monkeypatch):
         captured["timeout"] = timeout
         return 0
 
-    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+    monkeypatch.setattr("sslpv.services.client.run_client", fake_run_client)
 
     main([
         "client",
@@ -211,7 +212,7 @@ def test_main_client_post_hook_flags_forwarded(monkeypatch):
         captured["hook_on_change"] = hook_on_change
         return 0
 
-    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+    monkeypatch.setattr("sslpv.services.client.run_client", fake_run_client)
 
     main([
         "client",
@@ -246,7 +247,7 @@ def test_main_client_post_hook_defaults_forwarded(monkeypatch):
         captured["hook_on_change"] = hook_on_change
         return 0
 
-    monkeypatch.setattr(cli_module, "run_client", fake_run_client)
+    monkeypatch.setattr("sslpv.services.client.run_client", fake_run_client)
 
     main([
         "client",
@@ -271,7 +272,7 @@ def test_main_server_dispatches_to_run_server(monkeypatch):
     def fake_run_server(config_path: str) -> None:
         called_with["config_path"] = config_path
 
-    monkeypatch.setattr(cli_module, "run_server", fake_run_server)
+    monkeypatch.setattr("sslpv.services.server.run_server", fake_run_server)
 
     result = main(["server", "--config", "/etc/sslpv/config.json"])
     assert result == 0
@@ -282,7 +283,7 @@ def test_main_server_keyboard_interrupt_returns_zero(monkeypatch):
     def fake_run_server(config_path: str) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_module, "run_server", fake_run_server)
+    monkeypatch.setattr("sslpv.services.server.run_server", fake_run_server)
 
     result = main(["server", "--config", "x.json"])
     assert result == 0
@@ -292,7 +293,16 @@ def test_main_server_exception_returns_one(monkeypatch):
     def fake_run_server(config_path: str) -> None:
         raise RuntimeError("config error")
 
-    monkeypatch.setattr(cli_module, "run_server", fake_run_server)
+    monkeypatch.setattr("sslpv.services.server.run_server", fake_run_server)
 
     result = main(["server", "--config", "bad.json"])
+    assert result == 1
+
+
+def test_main_server_missing_extra_returns_one(monkeypatch):
+    # Simulate the server extra not being installed: importing the server
+    # module raises ImportError. main() must report it and return 1.
+    monkeypatch.setitem(sys.modules, "sslpv.services.server", None)
+
+    result = main(["server", "--config", "x.json"])
     assert result == 1
